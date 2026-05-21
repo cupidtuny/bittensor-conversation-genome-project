@@ -74,9 +74,7 @@ class WebpageMetadataGenerationTaskBundle(TaskBundle):
     async def setup(self) -> None:
         self.input.trim_input()
         self._split_conversation_in_windows()
-        if self.is_user_request:
-            bt.logging.info("User-requested bundle: bypassing min-window check.")
-        else:
+        if not self.is_user_request:
             self._enforce_minimum_convo_windows()
         await self._generate_metadata()
 
