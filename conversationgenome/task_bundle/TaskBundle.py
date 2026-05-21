@@ -27,6 +27,7 @@ class TaskBundle(BaseModel, ABC):
     example_output: Optional[ExampleOutputUnion] = None
     errors: List[Any] = Field(default_factory=list)
     warnings: List[Any] = Field(default_factory=list)
+    is_user_request: bool = False
 
     @abstractmethod
     def is_ready(self) -> bool:

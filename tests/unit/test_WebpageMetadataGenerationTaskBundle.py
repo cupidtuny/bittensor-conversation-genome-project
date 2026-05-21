@@ -27,11 +27,26 @@ async def test_setup_calls_trim_input_and_split_and_generate():
     with patch.object(bundle, '_split_conversation_in_windows') as mock_split, \
          patch.object(bundle, '_enforce_minimum_convo_windows') as mock_enforce, \
          patch.object(bundle, '_generate_metadata') as mock_generate:
-        
+
         await bundle.setup()
-        
+
         mock_split.assert_called_once()
         mock_enforce.assert_called_once()
+        mock_generate.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_setup_user_request_skips_min_windows():
+    bundle = DummyData.webpage_metadata_generation_task_bundle()
+    bundle.is_user_request = True
+    with patch.object(bundle, '_split_conversation_in_windows') as mock_split, \
+         patch.object(bundle, '_enforce_minimum_convo_windows') as mock_enforce, \
+         patch.object(bundle, '_generate_metadata') as mock_generate:
+
+        await bundle.setup()
+
+        mock_split.assert_called_once()
+        mock_enforce.assert_not_called()
         mock_generate.assert_called_once()
 
 

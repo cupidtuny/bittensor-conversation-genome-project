@@ -60,6 +60,47 @@ def test_is_ready_true_when_metadata_and_windows(sample_input):
     assert bundle.is_ready()
 
 
+def test_is_ready_true_for_user_request_without_quality():
+    bundle = DummyData.conversation_tagging_task_bundle()
+    bundle.is_user_request = True
+    bundle.input.quality_score = None
+    bundle.input.metadata = ConversationMetadata(participantProfiles=["Alice", "Bob"], tags=[], vectors={})
+    bundle.input.data.indexed_windows = [(0, [(0, "Hello"), (1, "Hi")])]
+    assert bundle.is_ready()
+
+
+def test_is_ready_true_for_user_request_below_quality_threshold():
+    bundle = DummyData.conversation_tagging_task_bundle()
+    bundle.is_user_request = True
+    bundle.input.quality_score = 1
+    bundle.input.metadata = ConversationMetadata(participantProfiles=["Alice", "Bob"], tags=[], vectors={})
+    bundle.input.data.indexed_windows = [(0, [(0, "Hello"), (1, "Hi")])]
+    assert bundle.is_ready()
+
+
+def test_is_ready_false_for_user_request_missing_metadata():
+    bundle = DummyData.conversation_tagging_task_bundle()
+    bundle.is_user_request = True
+    bundle.input.metadata = None
+    bundle.input.data.indexed_windows = [(0, [(0, "Hello"), (1, "Hi")])]
+    assert not bundle.is_ready()
+
+
+@pytest.mark.asyncio
+async def test_setup_user_request_skips_quality_and_min_windows():
+    bundle = DummyData.conversation_tagging_task_bundle()
+    bundle.is_user_request = True
+    with patch.object(bundle, "_split_conversation_in_windows") as mock_split, \
+         patch.object(bundle, "_enforce_minimum_convo_windows") as mock_enforce, \
+         patch.object(bundle, "_get_conversation_quality", AsyncMock()) as mock_quality, \
+         patch.object(bundle, "_generate_metadata", AsyncMock()) as mock_generate:
+        await bundle.setup()
+        mock_split.assert_called_once()
+        mock_enforce.assert_not_called()
+        mock_quality.assert_not_called()
+        mock_generate.assert_called_once()
+
+
 def test_split_conversation_in_windows_sets_indexed_windows(sample_input):
     bundle = DummyData.conversation_tagging_task_bundle()
     with patch("conversationgenome.task_bundle.ConversationTaggingTaskBundle.c.get", side_effect=lambda *a, **k: 2):

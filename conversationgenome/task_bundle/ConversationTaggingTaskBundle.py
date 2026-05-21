@@ -60,13 +60,20 @@ class ConversationTaggingTaskBundle(TaskBundle):
     _QUALITY_THRESHOLD = Utils._int(c.get('env', 'CONVO_QUALITY_THRESHOLD', 5))
 
     def is_ready(self) -> bool:
-        if self.input.metadata is not None and self.input.data.indexed_windows is not None and self._check_conversation_quality():
+        if self.input.metadata is None or self.input.data.indexed_windows is None:
+            return False
+        if self.is_user_request:
             return True
-        return False
+        return self._check_conversation_quality()
 
     async def setup(self) -> None:
         self.input.trim_input()
         self._split_conversation_in_windows()
+
+        if self.is_user_request:
+            await self._generate_metadata()
+            return
+
         self._enforce_minimum_convo_windows()
         await self._get_conversation_quality()
         # Only generate metadata and make bundle ready for conversations that pass quality threshold

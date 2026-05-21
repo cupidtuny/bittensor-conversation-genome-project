@@ -74,7 +74,8 @@ class WebpageMetadataGenerationTaskBundle(TaskBundle):
     async def setup(self) -> None:
         self.input.trim_input()
         self._split_conversation_in_windows()
-        self._enforce_minimum_convo_windows()
+        if not self.is_user_request:
+            self._enforce_minimum_convo_windows()
         await self._generate_metadata()
 
     def to_mining_tasks(self, number_of_tasks_per_bundle: int) -> List[Task]:
