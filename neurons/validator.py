@@ -69,6 +69,8 @@ class Validator(BaseValidatorNeuron):
                 return
             ip, port = decrypt_endpoint(ciphertext, private_key_bytes)
             self.committed_endpoints[hotkey] = (ip, port)
+            # Use block 0 so the next query_map re-verifies against the real block.
+            self._commitment_cache[hotkey] = (0, ip, port)
             bt.logging.info(f"Refreshed commitment for UID {uid} after failed request.")
         except Exception as e:
             bt.logging.debug(f"Could not refresh commitment for UID {uid}: {e}")
