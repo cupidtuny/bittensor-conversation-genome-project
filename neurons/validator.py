@@ -219,14 +219,10 @@ class Validator(BaseValidatorNeuron):
                     if status_code is not None:
                         self.initial_status_codes[status_code] = self.initial_status_codes.get(status_code, 0) + 1
 
-                        if status_code in [408, 422]:
-                            uids_to_retry.append(miner_uids[i])
-                        elif status_code is not None and str(status_code) == "503":
-                            bt.logging.info(f"503 for UID {miner_uids[i]} — refreshing commitment and retrying.")
+                        if status_code in [408, 422, 503] or (status_code is not None and str(status_code).startswith("5")):
                             self._refresh_commitment_for_uid(miner_uids[i])
                             uids_to_retry.append(miner_uids[i])
-                        elif status_code is not None and str(status_code).startswith("5"):
-                            bt.logging.info(f"5xx status code detected: {status_code} for UID {miner_uids[i]}")
+                            bt.logging.info(f"{status_code} for UID {miner_uids[i]} — refreshing commitment and retrying.")
 
                 uid_to_index = {uid: idx for idx, uid in enumerate(miner_uids)}
 
