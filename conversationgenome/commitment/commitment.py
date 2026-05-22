@@ -63,8 +63,12 @@ def read_all_commitments(
     subtensor, netuid: int, hotkeys: list, private_key_bytes: bytes
 ) -> dict:
     """Read and decrypt commitments for all hotkeys. Returns {hotkey: (ip, port)}."""
+    total = len(hotkeys)
     endpoints = {}
-    for hotkey in hotkeys:
+    bt.logging.info(f"Reading commitments: 0/{total} hotkeys...")
+    for i, hotkey in enumerate(hotkeys):
+        if (i + 1) % 50 == 0 or (i + 1) == total:
+            bt.logging.info(f"Reading commitments: {i + 1}/{total} hotkeys, {len(endpoints)} found so far...")
         ciphertext = read_commitment(subtensor, netuid, hotkey)
         if ciphertext is None:
             continue

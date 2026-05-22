@@ -73,8 +73,12 @@ class BaseValidatorNeuron(BaseNeuron):
 
         class _RedactIPFilter(logging.Filter):
             def filter(self, record):
-                if hasattr(record, "msg") and isinstance(record.msg, str):
-                    record.msg = _ip_redact_patterns.sub("[REDACTED]", record.msg)
+                msg = getattr(record, "msg", "")
+                if isinstance(msg, str):
+                    # Drop dendrite connection error logs entirely — they leak IPs
+                    if "Can not write request body" in msg or "Cannot connect to host" in msg:
+                        return False
+                    record.msg = _ip_redact_patterns.sub("[REDACTED]", msg)
                 if hasattr(record, "args") and record.args:
                     if isinstance(record.args, dict):
                         record.args = {
