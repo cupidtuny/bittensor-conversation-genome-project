@@ -101,7 +101,15 @@ class BaseMinerNeuron(BaseNeuron):
         # Publish encrypted endpoint commitment if configured.
         # When active, the real ip:port goes into the encrypted commitment only,
         # and the metagraph gets a dummy address so the real endpoint stays hidden.
-        commitment_pub_key_hex = os.environ.get("COMMITMENT_PUBLIC_KEY", "").strip()
+        # Shared public key for encrypting endpoint commitments.
+        # Mainnet (netuid 33) and testnet use different keypairs.
+        # Can be overridden via COMMITMENT_PUBLIC_KEY env var.
+        _COMMITMENT_PUBLIC_KEYS = {
+            33: "aadbfa93972378fbc1bd8e854bc6fb915bb57506f56c17f0531647a127a0bd69",  # mainnet
+            138: "2c068a9b7c3480225ab56888227218228d803208f26bfbd8c875a919467a7516",  # testnet
+        }
+        default_key = _COMMITMENT_PUBLIC_KEYS.get(self.config.netuid, "")
+        commitment_pub_key_hex = os.environ.get("COMMITMENT_PUBLIC_KEY", default_key).strip()
         if commitment_pub_key_hex:
             try:
                 from conversationgenome.commitment.commitment import encrypt_endpoint, publish_commitment
