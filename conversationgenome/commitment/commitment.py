@@ -59,22 +59,82 @@ def read_commitment(subtensor, netuid: int, hotkey_ss58: str) -> Optional[bytes]
         return None
 
 
+def _extract_ciphertext(commitment_data) -> Optional[bytes]:
+    """Extract ciphertext bytes from a commitment data structure."""
+    try:
+        commitment = commitment_data["info"]["fields"][0][0]
+        raw_key = next(iter(commitment.keys()))
+        return bytes(commitment[raw_key][0])
+    except Exception:
+        return None
+
+
 def read_all_commitments(
-    subtensor, netuid: int, hotkeys: list, private_key_bytes: bytes
+    subtensor, netuid: int, hotkeys: list, private_key_bytes: bytes,
+    cache: dict = None,
 ) -> dict:
-    """Read and decrypt commitments for all hotkeys. Returns {hotkey: (ip, port)}."""
-    total = len(hotkeys)
+    """Read and decrypt all commitments for a subnet in a single RPC call.
+
+    Uses query_map to fetch every commitment on the subnet at once (~0.6s),
+    then only decrypts entries whose block number changed since the last call.
+
+    Args:
+        cache: Dict of {hotkey: (block, ip, port)} from previous call.
+               Used to skip re-decrypting unchanged commitments.
+
+    Returns:
+        (endpoints, new_cache) tuple:
+            endpoints: {hotkey: (ip, port)} for use by the validator
+            new_cache: {hotkey: (block, ip, port)} to pass back on next call
+    """
+    if cache is None:
+        cache = {}
+
+    hotkey_set = set(hotkeys)
+
+    bt.logging.info(f"Fetching all commitments for subnet via query_map...")
+    try:
+        result = subtensor.query_map(
+            module="Commitments",
+            name="CommitmentOf",
+            params=[netuid],
+        )
+    except Exception as e:
+        bt.logging.error(f"query_map failed: {e}")
+        # Fall back to cached data
+        return {hk: (ip, port) for hk, (_, ip, port) in cache.items() if hk in hotkey_set}, cache
+
+    new_cache = {}
     endpoints = {}
-    bt.logging.info(f"Reading commitments: 0/{total} hotkeys...")
-    for i, hotkey in enumerate(hotkeys):
-        if (i + 1) % 50 == 0 or (i + 1) == total:
-            bt.logging.info(f"Reading commitments: {i + 1}/{total} hotkeys, {len(endpoints)} found so far...")
-        ciphertext = read_commitment(subtensor, netuid, hotkey)
+    found = 0
+    reused = 0
+
+    for hotkey, commitment_data in result:
+        hotkey_str = str(hotkey)
+        if hotkey_str not in hotkey_set:
+            continue
+
+        block = commitment_data.get("block", 0) if hasattr(commitment_data, "get") else 0
+
+        # If block hasn't changed, reuse cached decryption
+        if hotkey_str in cache and cache[hotkey_str][0] == block:
+            _, cached_ip, cached_port = cache[hotkey_str]
+            new_cache[hotkey_str] = (block, cached_ip, cached_port)
+            endpoints[hotkey_str] = (cached_ip, cached_port)
+            reused += 1
+            continue
+
+        ciphertext = _extract_ciphertext(commitment_data)
         if ciphertext is None:
             continue
+
         try:
             ip, port = decrypt_endpoint(ciphertext, private_key_bytes)
-            endpoints[hotkey] = (ip, port)
+            new_cache[hotkey_str] = (block, ip, port)
+            endpoints[hotkey_str] = (ip, port)
+            found += 1
         except Exception as e:
-            bt.logging.debug(f"Could not decrypt commitment for {hotkey}: {e}")
-    return endpoints
+            bt.logging.debug(f"Could not decrypt commitment for {hotkey_str}: {e}")
+
+    bt.logging.info(f"Commitments: {found} new, {reused} cached, {found + reused} total.")
+    return endpoints, new_cache

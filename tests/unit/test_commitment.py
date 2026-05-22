@@ -148,44 +148,87 @@ class TestReadCommitment:
 # ── read_all_commitments ─────────────────────────────────────────────
 
 class TestReadAllCommitments:
+    @staticmethod
+    def _make_commitment_data(ciphertext, block=100):
+        return {"block": block, "info": {"fields": [[{f"Raw{len(ciphertext)}": [list(ciphertext)]}]]}}
+
     def test_decrypts_all_available(self):
         pub, priv = _generate_keypair()
         ct1 = encrypt_endpoint("10.0.0.1", 8080, pub)
         ct2 = encrypt_endpoint("10.0.0.2", 9090, pub)
 
-        def fake_get_metadata(subtensor, netuid, hotkey):
-            ciphertexts = {"hk0": ct1, "hk1": ct2}
-            ct = ciphertexts.get(hotkey)
-            if ct is None:
-                return None
-            return {"info": {"fields": [[{f"Raw{len(ct)}": [list(ct)]}]]}}
+        query_map_result = [
+            ("hk0", self._make_commitment_data(ct1, block=10)),
+            ("hk1", self._make_commitment_data(ct2, block=20)),
+        ]
 
-        with patch(
-            "bittensor.core.extrinsics.serving.get_metadata",
-            side_effect=fake_get_metadata,
-        ):
-            endpoints = read_all_commitments(
-                MagicMock(), 138, ["hk0", "hk1", "hk2"], priv
-            )
+        subtensor = MagicMock()
+        subtensor.query_map.return_value = query_map_result
+
+        endpoints, cache = read_all_commitments(
+            subtensor, 138, ["hk0", "hk1", "hk2"], priv
+        )
 
         assert endpoints["hk0"] == ("10.0.0.1", 8080)
         assert endpoints["hk1"] == ("10.0.0.2", 9090)
         assert "hk2" not in endpoints
+        assert "hk0" in cache
+        assert "hk1" in cache
 
     def test_skips_undecryptable(self):
         pub1, _ = _generate_keypair()
         _, priv2 = _generate_keypair()
         ct = encrypt_endpoint("10.0.0.1", 8080, pub1)
 
-        metadata = {"info": {"fields": [[{f"Raw{len(ct)}": [list(ct)]}]]}}
-        with patch(
-            "bittensor.core.extrinsics.serving.get_metadata",
-            return_value=metadata,
-        ):
-            # priv2 can't decrypt ct encrypted with pub1
-            endpoints = read_all_commitments(MagicMock(), 138, ["hk0"], priv2)
+        query_map_result = [
+            ("hk0", self._make_commitment_data(ct, block=10)),
+        ]
+
+        subtensor = MagicMock()
+        subtensor.query_map.return_value = query_map_result
+
+        # priv2 can't decrypt ct encrypted with pub1
+        endpoints, cache = read_all_commitments(subtensor, 138, ["hk0"], priv2)
 
         assert endpoints == {}
+        assert cache == {}
+
+    def test_reuses_cache_when_block_unchanged(self):
+        pub, priv = _generate_keypair()
+        ct = encrypt_endpoint("10.0.0.1", 8080, pub)
+
+        query_map_result = [
+            ("hk0", self._make_commitment_data(ct, block=10)),
+        ]
+
+        subtensor = MagicMock()
+        subtensor.query_map.return_value = query_map_result
+
+        # First call populates cache
+        endpoints, cache = read_all_commitments(subtensor, 138, ["hk0"], priv)
+        assert endpoints["hk0"] == ("10.0.0.1", 8080)
+
+        # Second call with same block — should reuse cache, not re-decrypt
+        endpoints2, cache2 = read_all_commitments(subtensor, 138, ["hk0"], priv, cache=cache)
+        assert endpoints2["hk0"] == ("10.0.0.1", 8080)
+        assert cache2["hk0"] == cache["hk0"]
+
+    def test_re_decrypts_when_block_changes(self):
+        pub, priv = _generate_keypair()
+        ct1 = encrypt_endpoint("10.0.0.1", 8080, pub)
+        ct2 = encrypt_endpoint("10.0.0.2", 9090, pub)
+
+        subtensor = MagicMock()
+
+        # First call
+        subtensor.query_map.return_value = [("hk0", self._make_commitment_data(ct1, block=10))]
+        endpoints, cache = read_all_commitments(subtensor, 138, ["hk0"], priv)
+        assert endpoints["hk0"] == ("10.0.0.1", 8080)
+
+        # Second call with new block and new ciphertext
+        subtensor.query_map.return_value = [("hk0", self._make_commitment_data(ct2, block=20))]
+        endpoints2, cache2 = read_all_commitments(subtensor, 138, ["hk0"], priv, cache=cache)
+        assert endpoints2["hk0"] == ("10.0.0.2", 9090)
 
 
 # ── validator integration ────────────────────────────────────────────

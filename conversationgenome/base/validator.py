@@ -109,6 +109,9 @@ class BaseValidatorNeuron(BaseNeuron):
 
         # Committed endpoint cache: {hotkey_ss58: (ip, port)}
         self.committed_endpoints: Dict[str, Tuple[str, int]] = {}
+        # Block-aware cache: {hotkey_ss58: (block, ip, port)}
+        self._commitment_cache: dict = {}
+        self._last_commitment_refresh: float = 0.0
 
         # Init sync with the network. Updates the metagraph.
         self.sync()
@@ -361,15 +364,23 @@ class BaseValidatorNeuron(BaseNeuron):
         if not private_key_hex:
             return
 
+        # Skip if we refreshed less than 5 minutes ago
+        import time as _time
+        now = _time.time()
+        if now - self._last_commitment_refresh < 300:
+            bt.logging.info(f"Skipping commitment refresh — last refresh was {int(now - self._last_commitment_refresh)}s ago.")
+            return
+        self._last_commitment_refresh = now
+
         try:
             from conversationgenome.commitment.commitment import read_all_commitments
 
             private_key_bytes = bytes.fromhex(private_key_hex)
-            endpoints = read_all_commitments(
-                self.subtensor, self.config.netuid, self.metagraph.hotkeys, private_key_bytes
+            endpoints, self._commitment_cache = read_all_commitments(
+                self.subtensor, self.config.netuid, self.metagraph.hotkeys, private_key_bytes,
+                cache=self._commitment_cache,
             )
             self.committed_endpoints = endpoints
-            bt.logging.info(f"Fetched commitments for {len(self.metagraph.hotkeys)} hotkeys, {len(endpoints)} decrypted successfully.")
             for hotkey in endpoints:
                 uid = self.metagraph.hotkeys.index(hotkey) if hotkey in self.metagraph.hotkeys else "?"
                 bt.logging.info(f"  Commitment found for UID {uid}")
