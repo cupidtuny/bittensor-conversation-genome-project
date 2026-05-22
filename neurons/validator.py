@@ -52,12 +52,23 @@ class Validator(BaseValidatorNeuron):
         self.responses = []
         self.initial_status_codes = {}
         self.final_status_codes = {}
+        self._uid_refresh_timestamps: dict = {}  # {uid: last_refresh_time}
 
     def _refresh_commitment_for_uid(self, uid):
-        """Re-read and decrypt the commitment for a single miner UID."""
+        """Re-read and decrypt the commitment for a single miner UID. Debounced to 60s per UID."""
+        import time as _time
+
+        now = _time.time()
+        last = self._uid_refresh_timestamps.get(uid, 0)
+        if now - last < 300:
+            bt.logging.debug(f"Skipping commitment refresh for UID {uid} — last refresh was {int(now - last)}s ago.")
+            return
+
         private_key_hex = os.environ.get("COMMITMENT_PRIVATE_KEY", "").strip()
         if not private_key_hex:
             return
+
+        self._uid_refresh_timestamps[uid] = now
 
         try:
             from conversationgenome.commitment.commitment import decrypt_endpoint, read_commitment
