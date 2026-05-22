@@ -25,13 +25,12 @@ def decrypt_endpoint(ciphertext: bytes, private_key_bytes: bytes, expected_hotke
     box = SealedBox(PrivateKey(private_key_bytes))
     plaintext = box.decrypt(ciphertext).decode()
 
-    if "|" in plaintext:
-        hotkey_part, endpoint = plaintext.split("|", 1)
-        if expected_hotkey and hotkey_part != expected_hotkey:
-            raise ValueError(f"Commitment hotkey mismatch: expected {expected_hotkey[:8]}..., got {hotkey_part[:8]}...")
-    else:
-        # Backwards compatible with old format (ip:port without hotkey)
-        endpoint = plaintext
+    if "|" not in plaintext:
+        raise ValueError("Invalid commitment format: missing hotkey (old format no longer supported)")
+
+    hotkey_part, endpoint = plaintext.split("|", 1)
+    if expected_hotkey and hotkey_part != expected_hotkey:
+        raise ValueError(f"Commitment hotkey mismatch: expected {expected_hotkey[:8]}..., got {hotkey_part[:8]}...")
 
     ip, port_str = endpoint.rsplit(":", 1)
     return ip, int(port_str)

@@ -55,7 +55,7 @@ class Validator(BaseValidatorNeuron):
         self._uid_refresh_timestamps: dict = {}  # {uid: last_refresh_time}
 
     def _refresh_commitment_for_uid(self, uid):
-        """Re-read and decrypt the commitment for a single miner UID. Debounced to 60s per UID."""
+        """Re-read and decrypt the commitment for a single miner UID. Debounced to 5 min per UID."""
         import time as _time
 
         now = _time.time()
@@ -73,6 +73,9 @@ class Validator(BaseValidatorNeuron):
         try:
             from conversationgenome.commitment.commitment import decrypt_endpoint, read_commitment
 
+            if uid >= len(self.metagraph.hotkeys):
+                bt.logging.debug(f"UID {uid} out of range for current metagraph, skipping commitment refresh.")
+                return
             hotkey = self.metagraph.hotkeys[uid]
             private_key_bytes = bytes.fromhex(private_key_hex)
             ciphertext = read_commitment(self.subtensor, self.config.netuid, hotkey)
@@ -84,6 +87,11 @@ class Validator(BaseValidatorNeuron):
             self._commitment_cache[hotkey] = (0, ip, port)
             bt.logging.info(f"Refreshed commitment for UID {uid} after failed request.")
         except ValueError as e:
+            # Commitment is invalid (hotkey mismatch, old format, etc.) — evict from cache
+            hotkey = self.metagraph.hotkeys[uid] if uid < len(self.metagraph.hotkeys) else None
+            if hotkey:
+                self.committed_endpoints.pop(hotkey, None)
+                self._commitment_cache.pop(hotkey, None)
             bt.logging.warning(f"Rejected commitment for UID {uid}: {e}")
         except Exception as e:
             bt.logging.debug(f"Could not refresh commitment for UID {uid}: {e}")
@@ -92,6 +100,9 @@ class Validator(BaseValidatorNeuron):
         """Get axon list for UIDs, applying committed endpoint overrides when available."""
         axons = []
         for uid in uids:
+            if uid >= len(self.metagraph.axons) or uid >= len(self.metagraph.hotkeys):
+                bt.logging.debug(f"UID {uid} out of range, skipping.")
+                continue
             axon = self.metagraph.axons[uid]
             hotkey = self.metagraph.hotkeys[uid]
             if hotkey in self.committed_endpoints:

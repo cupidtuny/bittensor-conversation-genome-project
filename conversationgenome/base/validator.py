@@ -397,6 +397,15 @@ class BaseValidatorNeuron(BaseNeuron):
         # Sync the metagraph.
         self.metagraph.sync(subtensor=self.subtensor)
 
+        # Clean stale entries from commitment caches for hotkeys no longer in metagraph.
+        current_hotkeys = set(self.metagraph.hotkeys)
+        stale_keys = [hk for hk in self.committed_endpoints if hk not in current_hotkeys]
+        for hk in stale_keys:
+            del self.committed_endpoints[hk]
+            self._commitment_cache.pop(hk, None)
+        if stale_keys:
+            bt.logging.info(f"Cleaned {len(stale_keys)} stale commitment cache entries.")
+
         # Refresh encrypted endpoint commitments on every metagraph sync,
         # regardless of whether axon info changed (commitments are independent).
         self.refresh_miner_endpoints()

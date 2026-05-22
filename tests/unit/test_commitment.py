@@ -74,14 +74,15 @@ class TestEncryptDecrypt:
         with pytest.raises(ValueError, match="mismatch"):
             decrypt_endpoint(ct, priv, expected_hotkey="5MinerB")
 
-    def test_backwards_compatible_no_hotkey(self):
-        """Old format commitments (ip:port without hotkey) should still decrypt."""
+    def test_old_format_without_hotkey_rejected(self):
+        """Old format commitments (ip:port without hotkey) should be rejected."""
         pub, priv = _generate_keypair()
-        # Simulate old format by encrypting without hotkey
-        ct = encrypt_endpoint("10.0.0.1", 8080, pub)
-        ip, port = decrypt_endpoint(ct, priv)
-        assert ip == "10.0.0.1"
-        assert port == 8080
+        # Simulate old format by manually encrypting just "ip:port" without pipe
+        from nacl.public import PublicKey, SealedBox
+        box = SealedBox(PublicKey(pub))
+        ct = box.encrypt(b"10.0.0.1:8080")
+        with pytest.raises(ValueError, match="old format no longer supported"):
+            decrypt_endpoint(ct, priv)
 
 
 # ── publish_commitment ───────────────────────────────────────────────
