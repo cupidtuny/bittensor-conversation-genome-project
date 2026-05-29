@@ -48,7 +48,8 @@ class Validator(BaseValidatorNeuron):
         if not private_key_hex:
             bt.logging.error(
                 "COMMITMENT_PRIVATE_KEY is not set. Validators require it to read miner "
-                "endpoint commitments. Set it in your environment (see env.example) and restart."
+                "endpoint commitments. Set it in your environment and restart. "
+                "Contact ReadyAI if you need help."
             )
             raise SystemExit(1)
         try:
