@@ -115,26 +115,6 @@ class WandbLib:
             reinit=True,
         )
 
-        # Install fd-level scrubbers AFTER wandb.init.
-        #
-        # Ordering matters in fd-redirect chains. wandb.init duplicates
-        # the real fd 1/2 and dup2s its own pipe over them so its capture
-        # thread reads everything written to those fds. If we install our
-        # scrubber BEFORE wandb does, our pipe ends up upstream of wandb's
-        # — wandb's capture thread sees raw bytes and the only path that
-        # gets scrubbed is the final write to the terminal/pm2-pipe.
-        #
-        # Installing AFTER wandb means our os.dup(1)/(2) captures wandb's
-        # pipe write end. The chain becomes:
-        #   write → our pipe → scrub → write to wandb's pipe
-        #         → wandb's capture (sees scrubbed) → original fd (pm2)
-        # so both surfaces see scrubbed output.
-        #
-        # Catches loguru too: loguru writes go directly to fd 2 via its
-        # cached stderr stream, which our dup2 now points at our pipe.
-        from conversationgenome.analytics._scrubber import install_fd_scrubbers
-        install_fd_scrubbers()
-
         # Nothing logged yet
         self.log_line_count = 0
 
