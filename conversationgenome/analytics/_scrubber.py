@@ -146,8 +146,106 @@ def install_stdio_scrubbers() -> None:
 
     Idempotent: subsequent calls are no-ops. Safe to call before or after
     wandb.init — the wrappers stay attached for the process lifetime.
+
+    NOTE: This only catches writes that go through sys.stdout / sys.stderr
+    at the Python level. Loguru (used by bittensor) caches the original
+    stderr reference at import time and bypasses this wrapper. Use
+    install_fd_scrubbers() if you need to filter loguru output too.
     """
     if not isinstance(sys.stdout, _ScrubbingStream):
         sys.stdout = _ScrubbingStream(sys.stdout)
     if not isinstance(sys.stderr, _ScrubbingStream):
         sys.stderr = _ScrubbingStream(sys.stderr)
+
+
+# ─── file-descriptor level scrubbing (catches loguru) ────────────────
+
+
+_fd_scrubbers_installed = False
+
+
+def _fd_reader_loop(read_fd: int, real_fd: int) -> None:
+    """Read from read_fd, scrub line-by-line, write to real_fd.
+
+    Keeps a small line buffer so a write that doesn't end with a newline
+    still gets scrubbed when its line completes.
+    """
+    import os
+    buf = b""
+    while True:
+        try:
+            chunk = os.read(read_fd, 4096)
+        except OSError:
+            break
+        if not chunk:
+            # Pipe closed (process shutting down). Flush any partial line.
+            if buf:
+                try:
+                    text = buf.decode(errors="replace")
+                    if not should_drop(text):
+                        os.write(real_fd, scrub(text).encode())
+                except OSError:
+                    pass
+            break
+
+        buf += chunk
+        # Split off complete lines; keep the last partial fragment in buf.
+        while True:
+            nl = buf.find(b"\n")
+            if nl < 0:
+                break
+            line = buf[: nl + 1]
+            buf = buf[nl + 1 :]
+            try:
+                text = line.decode(errors="replace")
+            except Exception:
+                # If we can't decode, pass through unchanged so we don't
+                # silently lose log data.
+                try:
+                    os.write(real_fd, line)
+                except OSError:
+                    return
+                continue
+            if should_drop(text):
+                continue
+            try:
+                os.write(real_fd, scrub(text).encode())
+            except OSError:
+                return
+
+
+def install_fd_scrubbers() -> None:
+    """Redirect fd 1 (stdout) and fd 2 (stderr) through a scrubbing pipe.
+
+    Anything written to those file descriptors — including loguru output
+    from bittensor, native libraries, child processes — passes through our
+    scrub/drop rules before reaching the real underlying fds.
+
+    Idempotent: subsequent calls are no-ops.
+
+    Must be called *before* wandb.init() if you want wandb's console
+    capture to see scrubbed text. wandb 0.18's console="auto" mode uses
+    its own fd manipulation, so install order matters.
+    """
+    import os
+    import threading
+
+    global _fd_scrubbers_installed
+    if _fd_scrubbers_installed:
+        return
+
+    for fd in (1, 2):
+        real_fd = os.dup(fd)
+        read_fd, write_fd = os.pipe()
+        os.dup2(write_fd, fd)
+        os.close(write_fd)
+
+        t = threading.Thread(
+            target=_fd_reader_loop,
+            args=(read_fd, real_fd),
+            daemon=True,
+            name=f"_scrubber_fd{fd}",
+        )
+        t.start()
+
+    _fd_scrubbers_installed = True

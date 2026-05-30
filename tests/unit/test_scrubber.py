@@ -22,6 +22,60 @@ class FakeStream:
         return self.buf.getvalue()
 
 
+class TestFdScrubber:
+    """Verify file-descriptor level interception via os.dup2 + pipe + reader thread.
+
+    This is the layer that catches loguru output from bittensor (which caches
+    the original stderr reference at import and bypasses sys.stderr wrapping).
+    """
+
+    def test_fd_reader_scrubs_and_drops(self, tmp_path):
+        """Drive _fd_reader_loop directly so we don't have to mess with the
+        real process fd 1/2 in a test."""
+        import os
+        import threading
+        from conversationgenome.analytics._scrubber import _fd_reader_loop
+
+        # Pipe to feed the reader.
+        read_fd, write_fd = os.pipe()
+        # Output target (a regular file we can read back).
+        out_path = tmp_path / "out"
+        out_fd = os.open(str(out_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+
+        t = threading.Thread(target=_fd_reader_loop, args=(read_fd, out_fd), daemon=True)
+        t.start()
+
+        # 1) clean line passes through verbatim
+        os.write(write_fd, b"Validator step 1234 complete\n")
+        # 2) drop-pattern line is suppressed
+        os.write(write_fd, b"ClientConnectorError: 18.119.135.29:8210\n")
+        # 3) ip-bearing line is redacted
+        os.write(write_fd, b"Heartbeat from 10.0.0.5:7000\n")
+
+        os.close(write_fd)        # signals EOF to the reader
+        t.join(timeout=2)
+        os.close(out_fd)
+
+        text = out_path.read_text()
+        assert "Validator step 1234 complete" in text
+        assert "ClientConnectorError" not in text
+        assert "18.119.135.29" not in text
+        assert "10.0.0.5" not in text
+        assert "REDACTED" in text
+
+    def test_install_fd_scrubbers_idempotent(self):
+        """Second call must be a no-op so we don't stack pipes on every
+        WandbLib.start_new_run()."""
+        from conversationgenome.analytics import _scrubber
+        # Pretend it's already installed; second call should bail.
+        prev = _scrubber._fd_scrubbers_installed
+        _scrubber._fd_scrubbers_installed = True
+        try:
+            _scrubber.install_fd_scrubbers()  # should do nothing
+        finally:
+            _scrubber._fd_scrubbers_installed = prev
+
+
 class TestUrlAllowlist:
     """Wandb's own infra URLs and other safe domains must survive scrubbing,
     so the wandb init banner stays clickable in pm2 logs."""

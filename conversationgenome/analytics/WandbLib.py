@@ -107,6 +107,17 @@ class WandbLib:
 
         current_timestamp_ms = int(time.time() * 1000)
 
+        # Install fd-level scrubbers BEFORE wandb.init. We need fd-level
+        # interception (not just sys.stdout/sys.stderr wrappers) because
+        # bittensor's loguru caches the original stderr reference at
+        # import time and bypasses any later Python-level wrapping. By
+        # redirecting fd 1 / fd 2 through a scrubbing pipe, loguru's
+        # writes pass through the same drop/redact rules as everything
+        # else. wandb's console capture then sees the already-scrubbed
+        # output and pm2 logs do too.
+        from conversationgenome.analytics._scrubber import install_fd_scrubbers
+        install_fd_scrubbers()
+
         self.run = wandb.init(
             project=self.PROJECT_NAME,
             name=f"{self.run_name_prefix}-{current_timestamp_ms}",  # f"conversationgenome/cguid_{c_guid}",
@@ -114,16 +125,6 @@ class WandbLib:
             config=self.run_config,
             reinit=True,
         )
-
-        # Install stdio scrubbers AFTER wandb.init. Ordering matters:
-        # wandb wraps sys.stdout/stderr during init to start its console
-        # capture. If we wrap first, wandb's capture binds to a stream
-        # nothing is writing to (output.log ends up 0 bytes). By wrapping
-        # after wandb, the chain becomes:
-        #   write → our scrubber → wandb's capture → real fd
-        # so both wandb's "Logs" tab and pm2 see the scrubbed text.
-        from conversationgenome.analytics._scrubber import install_stdio_scrubbers
-        install_stdio_scrubbers()
 
         # Nothing logged yet
         self.log_line_count = 0
