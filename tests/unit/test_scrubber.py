@@ -76,6 +76,41 @@ class TestFdScrubber:
             _scrubber._fd_scrubbers_installed = prev
 
 
+class TestSourceFileExtensions:
+    """Bittensor logs paths like `dendrite.py:262`. These syntactically look
+    like `hostname.tld:port` but they're source code, not endpoints. Pin the
+    guard so we don't redact them."""
+
+    def test_validator_py_lineno_kept(self):
+        from conversationgenome.analytics._scrubber import scrub
+        out = scrub("bittensor:validator.py:46 | Looping for piece 2 out of 46")
+        assert "validator.py:46" in out
+        assert "REDACTED" not in out
+
+    def test_dendrite_py_lineno_kept(self):
+        from conversationgenome.analytics._scrubber import scrub
+        out = scrub("bittensor:dendrite.py:262 | something happened")
+        assert "dendrite.py:262" in out
+
+    def test_real_dotted_hostport_still_redacted(self):
+        from conversationgenome.analytics._scrubber import scrub
+        out = scrub("calling miner.example.com:8080 for task")
+        assert "miner.example.com" not in out
+        assert "REDACTED" in out
+
+    def test_bare_hostname_with_dots_in_text_safe(self):
+        """A dotted source path immediately followed by a colon and a number
+        must not be redacted, even if it has multiple dots."""
+        from conversationgenome.analytics._scrubber import scrub
+        out = scrub("at conversationgenome/base/validator.py:393")
+        assert "validator.py:393" in out
+
+    def test_json_lineno_kept(self):
+        from conversationgenome.analytics._scrubber import scrub
+        out = scrub("error in config.json:12 unexpected token")
+        assert "config.json:12" in out
+
+
 class TestUrlAllowlist:
     """Wandb's own infra URLs and other safe domains must survive scrubbing,
     so the wandb init banner stays clickable in pm2 logs."""

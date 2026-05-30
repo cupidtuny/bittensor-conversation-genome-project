@@ -107,17 +107,6 @@ class WandbLib:
 
         current_timestamp_ms = int(time.time() * 1000)
 
-        # Install fd-level scrubbers BEFORE wandb.init. We need fd-level
-        # interception (not just sys.stdout/sys.stderr wrappers) because
-        # bittensor's loguru caches the original stderr reference at
-        # import time and bypasses any later Python-level wrapping. By
-        # redirecting fd 1 / fd 2 through a scrubbing pipe, loguru's
-        # writes pass through the same drop/redact rules as everything
-        # else. wandb's console capture then sees the already-scrubbed
-        # output and pm2 logs do too.
-        from conversationgenome.analytics._scrubber import install_fd_scrubbers
-        install_fd_scrubbers()
-
         self.run = wandb.init(
             project=self.PROJECT_NAME,
             name=f"{self.run_name_prefix}-{current_timestamp_ms}",  # f"conversationgenome/cguid_{c_guid}",
@@ -125,6 +114,26 @@ class WandbLib:
             config=self.run_config,
             reinit=True,
         )
+
+        # Install fd-level scrubbers AFTER wandb.init.
+        #
+        # Ordering matters in fd-redirect chains. wandb.init duplicates
+        # the real fd 1/2 and dup2s its own pipe over them so its capture
+        # thread reads everything written to those fds. If we install our
+        # scrubber BEFORE wandb does, our pipe ends up upstream of wandb's
+        # — wandb's capture thread sees raw bytes and the only path that
+        # gets scrubbed is the final write to the terminal/pm2-pipe.
+        #
+        # Installing AFTER wandb means our os.dup(1)/(2) captures wandb's
+        # pipe write end. The chain becomes:
+        #   write → our pipe → scrub → write to wandb's pipe
+        #         → wandb's capture (sees scrubbed) → original fd (pm2)
+        # so both surfaces see scrubbed output.
+        #
+        # Catches loguru too: loguru writes go directly to fd 2 via its
+        # cached stderr stream, which our dup2 now points at our pipe.
+        from conversationgenome.analytics._scrubber import install_fd_scrubbers
+        install_fd_scrubbers()
 
         # Nothing logged yet
         self.log_line_count = 0

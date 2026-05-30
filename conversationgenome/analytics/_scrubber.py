@@ -50,8 +50,52 @@ _HOSTPORT_RE = re.compile(
     r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[A-Za-z]{2,}:\d{1,5}\b"
 )
 
-# Bare host:port — covers `myhost:8080` even without dots.
-_BAREHOSTPORT_RE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9.-]{1,253}:\d{2,5}\b")
+# Bare host:port — covers `myhost:8080`. Dots are not allowed in the host
+# portion (otherwise we'd misclassify source paths like `dendrite.py:262`);
+# truly bare names go through _BAREHOSTPORT_RE, dotted names through
+# _HOSTPORT_RE with the code-file-extension guard applied separately.
+_BAREHOSTPORT_RE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9-]{1,253}:\d{2,5}\b")
+
+# Source file extensions that look like a TLD to _HOSTPORT_RE but aren't.
+# When the "TLD" of a host:port match is one of these, we leave the text
+# alone so log entries like `bittensor:dendrite.py:262` stay readable.
+_SOURCE_FILE_TLDS = frozenset({
+    "py", "pyc", "pyx", "pyi",
+    "js", "ts", "tsx", "jsx", "mjs",
+    "go", "rs", "rb", "java", "kt", "scala", "swift",
+    "c", "cc", "cpp", "cxx", "h", "hpp", "hxx",
+    "cs", "vb", "fs",
+    "sh", "bash", "zsh", "fish",
+    "html", "htm", "xml", "css", "scss", "sass",
+    "json", "yaml", "yml", "toml", "ini", "cfg", "conf",
+    "md", "rst", "txt", "log",
+    "sql", "graphql",
+    "vue", "svelte",
+})
+
+
+def _redact_hostport(match: re.Match) -> str:
+    """Redact a host:port unless the TLD is actually a source-file extension."""
+    text = match.group(0)
+    # text == "host.tld:port"; split off port, then TLD
+    host_part = text.rsplit(":", 1)[0]
+    tld = host_part.rsplit(".", 1)[-1].lower()
+    if tld in _SOURCE_FILE_TLDS:
+        return text
+    return "[REDACTED_ENDPOINT]"
+
+
+def _redact_barehost(match: re.Match) -> str:
+    """Redact a bare host:port unless the host is a source-file extension.
+
+    Handles substrings like `py:46` that appear when the host-extension
+    regex left a `*.py:N` intact and the bare regex then matched the tail.
+    """
+    text = match.group(0)
+    host_part = text.rsplit(":", 1)[0].lower()
+    if host_part in _SOURCE_FILE_TLDS:
+        return text
+    return "[REDACTED_ENDPOINT]"
 
 
 # ─── Drop list ────────────────────────────────────────────────────────
@@ -90,8 +134,8 @@ def scrub(message: str) -> str:
     message = _URL_RE.sub(_redact_url, message)
     message = _IPV4_RE.sub("[REDACTED_ENDPOINT]", message)
     message = _IPV6_RE.sub("[REDACTED_ENDPOINT]", message)
-    message = _HOSTPORT_RE.sub("[REDACTED_ENDPOINT]", message)
-    message = _BAREHOSTPORT_RE.sub("[REDACTED_ENDPOINT]", message)
+    message = _HOSTPORT_RE.sub(_redact_hostport, message)
+    message = _BAREHOSTPORT_RE.sub(_redact_barehost, message)
     return message
 
 
