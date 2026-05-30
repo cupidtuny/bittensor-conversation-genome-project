@@ -7,10 +7,8 @@ W&B defeats that. These tests pin both the drop-list and redaction behavior.
 import logging
 from unittest.mock import MagicMock
 
-from conversationgenome.analytics.WandbCountingHandler import (
-    WandbCountingHandler,
-    _scrub,
-)
+from conversationgenome.analytics._scrubber import scrub
+from conversationgenome.analytics.WandbCountingHandler import WandbCountingHandler
 
 
 def _make_handler():
@@ -20,11 +18,11 @@ def _make_handler():
     return handler, wandb_lib
 
 
-def _make_record(msg: str, pathname: str = "validator.py", module: str = "validator") -> logging.LogRecord:
+def _make_record(msg: str) -> logging.LogRecord:
     return logging.LogRecord(
         name="bittensor",
         level=logging.DEBUG,
-        pathname=pathname,
+        pathname="validator.py",
         lineno=0,
         msg=msg,
         args=None,
@@ -69,62 +67,43 @@ class TestDropList:
         wandb_lib.log.assert_not_called()
 
 
-# ─── source-module drop ──────────────────────────────────────────────
-
-class TestSourceModuleDrop:
-    def test_drops_bittensor_dendrite_records(self):
-        handler, wandb_lib = _make_handler()
-        # bittensor's formatter encodes source as `bittensor:dendrite.py:262`
-        handler.emit(_make_record(
-            "2026-05-30 - ERROR - bittensor:dendrite.py:262 | something happened",
-            pathname="dendrite.py", module="dendrite",
-        ))
-        wandb_lib.log.assert_not_called()
-
-    def test_drops_via_message_source_tag(self):
-        """Even if record.pathname doesn't help, the rendered text catches it."""
-        handler, wandb_lib = _make_handler()
-        handler.emit(_make_record(
-            "ERROR bittensor:axon.py:101 | accepted connection"
-        ))
-        wandb_lib.log.assert_not_called()
-
-    def test_drops_subtensor_records(self):
-        handler, wandb_lib = _make_handler()
-        handler.emit(_make_record(
-            "INFO bittensor:subtensor.py:55 | connected to ws://172.31.24.71:9944"
-        ))
-        wandb_lib.log.assert_not_called()
-
-
 # ─── scrub redaction ─────────────────────────────────────────────────
 
 class TestScrub:
     def test_ipv4(self):
-        assert "1.2.3.4" not in _scrub("got 1.2.3.4:5000")
-        assert "1.2.3.4" not in _scrub("from 1.2.3.4 to here")
-        assert "REDACTED" in _scrub("got 1.2.3.4 today")
+        assert "1.2.3.4" not in scrub("got 1.2.3.4:5000")
+        assert "1.2.3.4" not in scrub("from 1.2.3.4 to here")
+        assert "REDACTED" in scrub("got 1.2.3.4 today")
 
     def test_ipv6(self):
-        out = _scrub("got 2001:db8::1 talking to fe80::1:8080")
+        out = scrub("got 2001:db8::1 talking to fe80::1:8080")
         assert "2001:db8" not in out
         assert "fe80" not in out
         assert "REDACTED" in out
 
     def test_url(self):
-        out = _scrub("calling http://miner.example.com:8080/synapse stuff")
+        out = scrub("calling http://miner.example.com:8080/synapse stuff")
         assert "miner.example.com" not in out
         assert "8080" not in out
         assert "REDACTED" in out
 
     def test_hostport(self):
-        out = _scrub("dialed miner1.example.com:9999 ok")
+        out = scrub("dialed miner1.example.com:9999 ok")
         assert "miner1.example.com" not in out
         assert "9999" not in out
 
     def test_bare_hostport(self):
-        out = _scrub("dialed myhost:8080 ok")
+        out = scrub("dialed myhost:8080 ok")
         assert "myhost:8080" not in out
+
+    def test_does_not_redact_hh_mm_ss(self):
+        """Timestamps must not be mistaken for IPv6 / host:port."""
+        out = scrub("at 12:34:56 something happened")
+        assert "12:34:56" in out
+
+    def test_passes_innocuous_text(self):
+        out = scrub("Validator step 1234 complete")
+        assert out == "Validator step 1234 complete"
 
 
 # ─── pass-through ────────────────────────────────────────────────────
@@ -135,10 +114,15 @@ class TestPassThrough:
         handler.emit(_make_record("Validator step 1234 complete"))
         wandb_lib.log.assert_called_once_with({"bt_log": "Validator step 1234 complete"})
 
-    def test_passes_with_no_ip(self):
+    def test_normal_validator_message_passes(self):
+        """Routine validator messages must reach W&B — the previous source-
+        module filter incorrectly dropped these."""
         handler, wandb_lib = _make_handler()
+        handler.emit(_make_record("Commitment found for UID 126"))
         handler.emit(_make_record("Burning 0.9 to UID 81"))
-        wandb_lib.log.assert_called_once_with({"bt_log": "Burning 0.9 to UID 81"})
+        handler.emit(_make_record("resync_metagraph()"))
+        handler.emit(_make_record("Looping for piece 1 out of 30"))
+        assert wandb_lib.log.call_count == 4
 
     def test_redacts_ip_in_safe_message(self):
         handler, wandb_lib = _make_handler()
@@ -155,6 +139,5 @@ class TestReentrancy:
     def test_no_recursion_when_wandb_raises(self):
         handler, wandb_lib = _make_handler()
         wandb_lib.log.side_effect = RuntimeError("upstream pipe dead")
-        # Should not raise, recurse, or stack-overflow.
         handler.emit(_make_record("step 5"))
         assert wandb_lib.log.call_count == 1

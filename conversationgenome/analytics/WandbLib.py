@@ -49,6 +49,13 @@ class WandbLib:
         self.run = None
         self.bt_logger_attached = False
 
+        # Install sys.stdout / sys.stderr scrubbers before W&B's console
+        # capture is wired up. Anything bittensor (or anything else) prints
+        # is filtered through the shared drop/redact rules first, so the
+        # W&B console feed and pm2 logs both see endpoint-free output.
+        from conversationgenome.analytics._scrubber import install_stdio_scrubbers
+        install_stdio_scrubbers()
+
         self._initialized = True
 
     def init_wandb(self, config=None, data=None):
@@ -107,17 +114,18 @@ class WandbLib:
 
         current_timestamp_ms = int(time.time() * 1000)
 
-        # IMPORTANT: console="off" disables W&B's default stdout/stderr
-        # capture. Without this, bittensor's dendrite errors (which include
-        # decrypted miner endpoints) leak into the W&B run via the console
-        # channel, bypassing WandbCountingHandler's filter entirely.
+        # Endpoint privacy: rather than disable W&B's console capture
+        # (console="off") — which wipes out all useful streaming output —
+        # we let W&B keep capturing stdout/stderr, and install scrubbing
+        # wrappers around sys.stdout / sys.stderr earlier so the captured
+        # text has miner endpoints already redacted. Same protection,
+        # observability preserved.
         self.run = wandb.init(
             project=self.PROJECT_NAME,
             name=f"{self.run_name_prefix}-{current_timestamp_ms}",  # f"conversationgenome/cguid_{c_guid}",
             entity=self.ENTITY,
             config=self.run_config,
             reinit=True,
-            settings=wandb.Settings(console="off"),
         )
 
         # Nothing logged yet
