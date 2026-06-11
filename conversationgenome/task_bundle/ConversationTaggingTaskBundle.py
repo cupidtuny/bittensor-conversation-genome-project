@@ -87,7 +87,6 @@ class ConversationTaggingTaskBundle(TaskBundle):
         self._split_conversation_in_windows()
 
         if self.is_user_request:
-            bt.logging.info("User-requested bundle: bypassing min-window and quality checks.")
             await self._generate_metadata()
             return
 

@@ -20,18 +20,22 @@ import argparse
 import asyncio
 import copy
 import datetime
+import logging
 import os
+import re
 import threading
 from traceback import print_exception
-from typing import List
+from typing import Dict, List, Tuple
 
 import bittensor as bt
 import numpy as np
 import torch
 
 from conversationgenome.base.neuron import BaseNeuron
+from conversationgenome.ConfigLib import c
 from conversationgenome.mock.mock import MockDendrite
 from conversationgenome.utils.config import add_validator_args
+from conversationgenome.utils.uids import check_uid_availability
 from conversationgenome.validator.ValidatorLib import ValidatorLib
 
 
@@ -62,6 +66,37 @@ class BaseValidatorNeuron(BaseNeuron):
             self.dendrite = bt.dendrite(wallet=self.wallet)
         bt.logging.info(f"Dendrite: {self.dendrite}")
 
+        # Install a log filter to redact miner IP addresses from bittensor's
+        # internal dendrite/axon logs (trace, debug, error messages).
+        # Matches ip:port, ip:port/, ('ip', port), and bare IPs in URLs.
+        _ip_redact_patterns = re.compile(
+            r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d{1,5})?\b"
+        )
+
+        class _RedactIPFilter(logging.Filter):
+            def filter(self, record):
+                msg = getattr(record, "msg", "")
+                if isinstance(msg, str):
+                    # Drop dendrite connection error logs entirely — they leak IPs
+                    if "Can not write request body" in msg or "Cannot connect to host" in msg:
+                        return False
+                    record.msg = _ip_redact_patterns.sub("[REDACTED]", msg)
+                if hasattr(record, "args") and record.args:
+                    if isinstance(record.args, dict):
+                        record.args = {
+                            k: _ip_redact_patterns.sub("[REDACTED]", str(v)) if isinstance(v, str) else v
+                            for k, v in record.args.items()
+                        }
+                    elif isinstance(record.args, tuple):
+                        record.args = tuple(
+                            _ip_redact_patterns.sub("[REDACTED]", str(a)) if isinstance(a, str) else a
+                            for a in record.args
+                        )
+                return True
+
+        for handler in logging.root.handlers:
+            handler.addFilter(_RedactIPFilter())
+
         # Set up initial scoring weights for validation
         bt.logging.info("Building validation weights.")
         self.scores = np.zeros(self.metagraph.n, dtype=np.float32)
@@ -73,6 +108,12 @@ class BaseValidatorNeuron(BaseNeuron):
 
         # Burn rate -> burns 90% of the emissions.
         self.burn_rate = 0.9
+
+        # Committed endpoint cache: {hotkey_ss58: (ip, port)}
+        self.committed_endpoints: Dict[str, Tuple[str, int]] = {}
+        # Block-aware cache: {hotkey_ss58: (block, ip, port)}
+        self._commitment_cache: dict = {}
+        self._last_commitment_refresh: float = 0.0
 
         # Init sync with the network. Updates the metagraph.
         self.sync()
@@ -266,7 +307,21 @@ class BaseValidatorNeuron(BaseNeuron):
         burn_uid = self.get_burn_uid()
         burn_rate = self.burn_rate
 
-        raw_weights = vl.get_raw_weights(self.scores, burn_uid=burn_uid, burn_rate=burn_rate)
+        # Eligible UIDs receive a tiny baseline weight even if their score is 0,
+        # so a miner that has never been sampled (or had a transient failure) is
+        # not permanently locked out of the cubic distribution. Filter matches
+        # the sampling filter in get_random_uids -> check_uid_availability.
+        eligible_uids = [
+            uid for uid in range(self.metagraph.n.item())
+            if check_uid_availability(self.metagraph, uid, self.config.neuron.vpermit_tao_limit)
+        ]
+
+        raw_weights = vl.get_raw_weights(
+            self.scores,
+            burn_uid=burn_uid,
+            burn_rate=burn_rate,
+            eligible_uids=eligible_uids,
+        )
 
         if raw_weights is None or raw_weights.size == 0:
             bt.logging.error("Error Generating raw weights. Returning without setting weights")
@@ -319,6 +374,46 @@ class BaseValidatorNeuron(BaseNeuron):
         else:
             bt.logging.error(f"set_weights failed: {msg}")
 
+    def refresh_miner_endpoints(self, force: bool = False):
+        """Read and decrypt encrypted endpoint commitments for all miners.
+
+        Args:
+            force: If True, bypass the 5-minute debounce. Use at the start of
+                each forward() loop to guarantee freshness before sampling
+                miners. The chain query (query_map) is debounced cheaply by
+                block-number caching inside read_all_commitments, so forcing
+                here only re-fetches the map (~tens of ms) and re-decrypts
+                only entries whose block changed.
+        """
+        private_key_hex = c.get("env", "COMMITMENT_PRIVATE_KEY", "").strip()
+        if not private_key_hex:
+            return
+
+        # 5-min debounce protects against thrashing when resync_metagraph fires
+        # frequently; callers that need fresh state at a specific moment can
+        # pass force=True (e.g. before a new forward loop dispatches synapses).
+        import time as _time
+        now = _time.time()
+        if not force and now - self._last_commitment_refresh < 300:
+            bt.logging.info(f"Skipping commitment refresh — last refresh was {int(now - self._last_commitment_refresh)}s ago.")
+            return
+        self._last_commitment_refresh = now
+
+        try:
+            from conversationgenome.commitment.commitment import read_all_commitments
+
+            private_key_bytes = bytes.fromhex(private_key_hex)
+            endpoints, self._commitment_cache = read_all_commitments(
+                self.subtensor, self.config.netuid, self.metagraph.hotkeys, private_key_bytes,
+                cache=self._commitment_cache,
+            )
+            self.committed_endpoints = endpoints
+            for hotkey in endpoints:
+                uid = self.metagraph.hotkeys.index(hotkey) if hotkey in self.metagraph.hotkeys else "?"
+                bt.logging.info(f"  Commitment found for UID {uid}")
+        except Exception as e:
+            bt.logging.error(f"Error refreshing miner commitments: {e}")
+
     def resync_metagraph(self):
         """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
         bt.logging.info("resync_metagraph()")
@@ -328,6 +423,19 @@ class BaseValidatorNeuron(BaseNeuron):
 
         # Sync the metagraph.
         self.metagraph.sync(subtensor=self.subtensor)
+
+        # Clean stale entries from commitment caches for hotkeys no longer in metagraph.
+        current_hotkeys = set(self.metagraph.hotkeys)
+        stale_keys = [hk for hk in self.committed_endpoints if hk not in current_hotkeys]
+        for hk in stale_keys:
+            del self.committed_endpoints[hk]
+            self._commitment_cache.pop(hk, None)
+        if stale_keys:
+            bt.logging.info(f"Cleaned {len(stale_keys)} stale commitment cache entries.")
+
+        # Refresh encrypted endpoint commitments on every metagraph sync,
+        # regardless of whether axon info changed (commitments are independent).
+        self.refresh_miner_endpoints()
 
         # Check if the metagraph axon info has changed.
         if previous_metagraph.axons == self.metagraph.axons:
