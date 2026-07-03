@@ -22,7 +22,7 @@ class SurveyTaggingTask(Task):
     async def mine(self) -> dict[str, list]:
         try:
             llml = get_llm_backend()
-            res = llml.survey_to_metadata(self.input.data.survey_question, self.input.data.comment)
+            res = llml.survey_to_metadata(self.input.data.survey_question, self.input.data.comment, generateEmbeddings=False)
             return {"tags": res.tags, "vectors": res.vectors}
         
         except Exception as e:

@@ -20,6 +20,11 @@ class LlmOpenRouter(LlmLib):
         self.provider_preference = c.get('env', "OPENROUTER_PROVIDER_PREFERENCE", "chutes")
         self.embedding_model = c.get('env', "OPENROUTER_EMBEDDING_MODEL", "text-embedding-3-small")
 
+        # OpenRouter does not provide an /embeddings endpoint. If an OpenAI key is
+        # available, use it directly for embeddings; otherwise embeddings return None.
+        openai_api_key = c.get('env', "OPENAI_API_KEY")
+        self.embedding_client = OpenAI(api_key=openai_api_key) if openai_api_key else None
+
 
     ###############################################################################################
     ################################## Abstract methods override ##################################
@@ -47,13 +52,15 @@ class LlmOpenRouter(LlmLib):
 
     def get_vector_embeddings(self, tag: str, dimensions=1536) -> List[float]|None:
         tag = tag.replace("\n", " ")
-        # Note: OpenRouter might not support embeddings for all models.
-        # We use a default embedding model (likely OpenAI's) or a configured one.
+        # OpenRouter has no embeddings endpoint, so embeddings go through OpenAI directly.
+        if not self.embedding_client:
+            print("OpenRouter Embedding Error: no OPENAI_API_KEY configured for embeddings")
+            return None
         try:
-            response = self.client.embeddings.create(
+            response = self.embedding_client.embeddings.create(
                 input=tag,
                 model=self.embedding_model,
-                # dimensions=dimensions # Some models don't support dimensions param
+                dimensions=dimensions
             )
             return response.data[0].embedding
         except Exception as e:

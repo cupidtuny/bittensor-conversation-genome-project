@@ -133,18 +133,24 @@ class LlmLib(ABC):
         return RawMetadata(tags=tags, vectors=vectors, success=True)
 
 
-    def survey_to_metadata(self, survey_question: str, comment:str) -> RawMetadata|None:
+    def survey_to_metadata(self, survey_question: str, comment:str, generateEmbeddings=False) -> RawMetadata|None:
         prompt = prompt_manager.survey_tag_prompt(survey_question, comment)
         response_content = self.basic_prompt(prompt)
         if not isinstance(response_content, str):
             print("Error: Unexpected response format. Content type:", type(response_content))
             return None
-        try:
-            tags = Utils.clean_tags(response_content.split(","))
-            vectors = self.get_vector_embeddings_set(tags)
-        except Exception as e:
-            print("Error: Error generating vectors")
+        tags = Utils.clean_tags(response_content.split(","))
+        if Utils.empty(tags):
+            print("No tags returned")
             return None
+
+        vectors = None
+        if generateEmbeddings:
+            try:
+                vectors = self.get_vector_embeddings_set(tags)
+            except Exception as e:
+                print("Error: Error generating vectors")
+                return None
         return RawMetadata(tags=tags, vectors=vectors, success=True)
 
     def validate_conversation_quality(self, conversation: Conversation) -> ConversationQualityMetadata | None:

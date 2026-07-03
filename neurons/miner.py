@@ -50,15 +50,16 @@ class Miner(BaseMinerNeuron):
         """
         ml = MinerLib()
 
+        result = None
         try:
             task: Task = parse_task(synapse.cgp_input[0]["task"])
 
             bt.logging.info(f"Miner received task of type {task.type}")
             result = await ml.do_mining(task=task)
         except Exception as e:
-            bt.logging.error(f"Error extracting task from synapse")
-            
-        synapse.cgp_output = [result]
+            bt.logging.error(f"Error processing task from synapse: {e}")
+
+        synapse.cgp_output = [result] if result else None
         return synapse
 
     async def blacklist(self, synapse: CgSynapse) -> typing.Tuple[bool, str]:
